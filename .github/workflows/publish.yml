@@ -1,0 +1,53 @@
+# Publishes installer files as a GitHub Release.
+# How it works: installer files are pushed to a temporary branch named upload/vX.Y.Z.
+# This workflow turns them into the release vX.Y.Z and then deletes that branch.
+# It uses only this repository's built-in token; no extra secrets are needed.
+name: Publish release
+
+on:
+  push:
+    branches:
+      - 'upload/v*'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check files and version
+        id: meta
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#upload/}"
+          ver="${tag#v}"
+          json_ver="$(jq -r .version latest.json)"
+          if [ "$json_ver" != "$ver" ]; then
+            echo "latest.json says $json_ver but the branch says $ver" >&2
+            exit 1
+          fi
+          for f in "Clod-Setup.exe" "Clod_${ver}_x64-setup.exe" "Clod_${ver}_x64-setup.exe.sig" latest.json notes.md; do
+            test -s "$f" || { echo "missing $f" >&2; exit 1; }
+          done
+          sha256sum -c SHA256SUMS
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "ver=$ver" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VER: ${{ steps.meta.outputs.ver }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            "Clod-Setup.exe" "Clod_${VER}_x64-setup.exe" "Clod_${VER}_x64-setup.exe.sig" latest.json \
+            --target main --title "Clod ${VER}" --notes-file notes.md --latest
+
+      - name: Remove the temporary branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/heads/${GITHUB_REF_NAME}"
